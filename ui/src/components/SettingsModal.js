@@ -27,11 +27,11 @@ function SettingsModal() {
   useEffect(() => {
     async function fetchSettingsAndPrompts() {
       try {
-        const settingsResponse = await fetch('http://127.0.0.1:5000/api/settings');
+        const settingsResponse = await fetch('http://127.0.0.1:5001/api/settings');
         const settingsData = await settingsResponse.json();
         setSettings(settingsData);
 
-        const promptsResponse = await fetch('http://127.0.0.1:5000/api/prompts');
+        const promptsResponse = await fetch('http://127.0.0.1:5001/api/prompts');
         const promptsData = await promptsResponse.json();
         setCustomPromptsLLM(promptsData.prompts.LLM.prompts);
         setCustomPromptsChat(promptsData.prompts["Chat Engine"].prompts);
@@ -110,7 +110,7 @@ function SettingsModal() {
 
   const saveSettings = async () => {
     try {
-      await fetch('http://127.0.0.1:5000/api/settings', {
+      await fetch('http://127.0.0.1:5001/api/settings', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(settings),
@@ -123,7 +123,7 @@ function SettingsModal() {
 
   const savePrompts = async () => {
     try {
-      await fetch('http://127.0.0.1:5000/api/prompts', {
+      await fetch('http://127.0.0.1:5001/api/prompts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ LLM: customPromptsLLM, Chat: customPromptsChat, defaults: defaultPrompt, selectedChatEnginePrompt: selectedPromptChat, selectedLLMPrompt: selectedPromptLLM }),
@@ -138,7 +138,7 @@ function SettingsModal() {
     const confirmed = window.confirm(`Are you sure you want to delete "${data.label}"?`);
     if (confirmed) {
       try {
-        const response = await fetch('http://127.0.0.1:5000/api/delete_prompt', {
+        const response = await fetch('http://127.0.0.1:5001/api/delete_prompt', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',

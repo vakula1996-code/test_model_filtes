@@ -44,7 +44,7 @@ function ChatArea({ messages, setMessages }) {
 
   async function fetchModels() {
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/list_models');
+      const response = await fetch('http://127.0.0.1:5001/api/list_models');
       const data = await response.json();
       const llms = data.llm;
       const embed = data.embed;
@@ -79,7 +79,7 @@ function ChatArea({ messages, setMessages }) {
       }
 
       setIsSending(true);
-      const response = await fetch('http://127.0.0.1:5000/api/select_model', {
+      const response = await fetch('http://127.0.0.1:5001/api/select_model', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -115,7 +115,7 @@ function ChatArea({ messages, setMessages }) {
     setMessages([...messages, newMessage]);
 
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/query', {
+      const response = await fetch('http://127.0.0.1:5001/api/query', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -178,14 +178,15 @@ function ChatArea({ messages, setMessages }) {
     setIsUploading(true);
     const formData = new FormData();
 
-    files.forEach((file, _) => {
-      formData.append('files', file);
+    files.forEach((file) => {
+      const relativePath = file.webkitRelativePath || file.name;
+      formData.append('files', file, relativePath);
     });
   
     formData.append('metadata', JSON.stringify(metadata));
   
     try {
-      const response = await fetch('http://127.0.0.1:5000/api/add_new_documents', {
+      const response = await fetch('http://127.0.0.1:5001/api/add_new_documents', {
         method: 'POST',
         body: formData,
       });

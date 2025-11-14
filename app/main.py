@@ -11,6 +11,12 @@ else:
 os.environ["TIKTOKEN_CACHE_DIR"] = os.path.join(bundle_dir, 'tiktoken_cache')
 os.environ["NLTK_DATA"] = os.path.join(bundle_dir, 'nltk_data')
 
+DEFAULT_OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+if not DEFAULT_OLLAMA_URL.startswith("http"):
+    DEFAULT_OLLAMA_URL = f"http://{DEFAULT_OLLAMA_URL}"
+os.environ.setdefault("OLLAMA_HOST", DEFAULT_OLLAMA_URL)
+DEFAULT_OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "mistral:instruct")
+
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 # Uncomment the line under to use FlaskUI
@@ -21,16 +27,19 @@ from llama_index.embeddings.ollama import OllamaEmbedding
 from llama_index.vector_stores.neo4jvector import Neo4jVectorStore
 from llama_index.core.prompts import ChatMessage
 from llama_index.core.memory import ChatMemoryBuffer
-from llama_index.core import Settings, VectorStoreIndex, StorageContext, SimpleDirectoryReader
+from llama_index.core import Settings, VectorStoreIndex, StorageContext
 from datetime import datetime, timedelta
 from tempfile import TemporaryDirectory
 import ollama
+import shutil
 import json
 import traceback
 import time
 from tqdm import tqdm
 import subprocess
 import platform
+
+from docling_loader import load_with_docling
 
 app = Flask(__name__, static_folder='web/build', static_url_path='/')
 ollama_process = None
@@ -53,18 +62,21 @@ app.register_blueprint(swaggerui_blueprint, url_prefix=SWAGGER_URL)
 def start_services():
     global ollama_process
     try:
-        # Start Ollama
-        ollama_process = subprocess.Popen(["ollama", "serve"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        print("Starting Ollama...")
-        print("Ollama started successfully")
-
-        time.sleep(1)
-
-        # Start Neo4j
-        if platform.system() == "Linux":
-            os.system("systemctl enable neo4j.service")
+        # Start Ollama if CLI is available (mostly for bare-metal dev runs)
+        if shutil.which("ollama"):
+            ollama_process = subprocess.Popen(["ollama", "serve"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            print("Starting Ollama...")
+            print("Ollama started successfully")
+            time.sleep(1)
         else:
+            print("Ollama binary not found. Assuming external Ollama via OLLAMA_URL.")
+
+        # Start Neo4j only when CLI is available.
+        neo4j_cli = shutil.which("neo4j")
+        if neo4j_cli:
             os.system("neo4j start")
+        else:
+            print("Neo4j CLI not found. Assuming Neo4j is managed externally.")
 
     except Exception as e:
         print("Error starting services: ", e)
@@ -105,6 +117,21 @@ def load_settings():
         with open('settings.json', 'w+') as f:
             json.dump(settings, f)
 
+    apply_settings_overrides()
+
+
+def apply_settings_overrides():
+    """Allow docker/env overrides for Neo4j connection without editing files."""
+    global settings
+    overrides = {
+        "uri": os.getenv("NEO4J_URI"),
+        "password": os.getenv("NEO4J_PASSWORD"),
+        "database": os.getenv("NEO4J_DATABASE"),
+    }
+    for key, value in overrides.items():
+        if value:
+            settings[key] = value
+
 # Load prompts from file
 def load_prompts():
     global prompts
@@ -138,17 +165,17 @@ def load_models():
     except FileNotFoundError:
         print("The models file doesn't exist. Creating a new one...")
         models = {
-            "llm": ["mistral:instruct"],
+            "llm": [DEFAULT_OLLAMA_MODEL],
             "embed": ["mxbai-embed-large:latest"]
         }
         with open('models.json', 'w+') as f:
             json.dump(models, f)
     finally:
         ollama_models = [model["name"] for model in ollama.list()['models']]
-        if "mistral:instruct" not in ollama_models:
+        if DEFAULT_OLLAMA_MODEL not in ollama_models:
             print("Loading default llm...")
             current_digest, bars = '', {}
-            for progress in ollama.pull("mistral:instruct", stream=True):
+            for progress in ollama.pull(DEFAULT_OLLAMA_MODEL, stream=True):
                 digest = progress.get('digest', '')
                 if digest != current_digest and current_digest in bars:
                     bars[current_digest].close()
@@ -192,13 +219,15 @@ def initialize_globals():
         load_settings()
         load_prompts()
         load_models()
-        current_model = "mistral:instruct"
+        current_model = DEFAULT_OLLAMA_MODEL
         current_embed_model = "mxbai-embed-large:latest"
+        if current_model not in models["llm"]:
+            models["llm"].insert(0, current_model)
 
         # Initialize the embed model
-        embed_model = OllamaEmbedding(model_name=current_embed_model, base_url="http://localhost:11434")
+        embed_model = OllamaEmbedding(model_name=current_embed_model, base_url=DEFAULT_OLLAMA_URL)
         Settings.embed_model = embed_model
-        llm = Ollama(model=current_model, request_timeout=120.0, base_url="http://localhost:11434", temperature=settings["temperature"], context_window=settings["context_window"])
+        llm = Ollama(model=current_model, request_timeout=120.0, base_url=DEFAULT_OLLAMA_URL, temperature=settings["temperature"], context_window=settings["context_window"])
         Settings.llm = llm
         Settings.chunk_size = settings["chunk_size"]
         Settings.chunk_overlap = settings["chunk_overlap"]
@@ -413,6 +442,7 @@ def add_new_documents():
 
             # Save files to the temporary directory, maintaining folder structure
             for file in files:
+                print(f"Saving uploaded file: {file.filename}")
                 relative_path = file.filename  # This will include the relative folder structure
                 save_path = os.path.join(temp_folder, relative_path)
 
@@ -423,20 +453,21 @@ def add_new_documents():
                 file.save(save_path)
 
             # Convert metadata from list of dicts to a single dict
-            meta = lambda filename: {"file_name": filename, **{m["key"]: m["value"] for m in metadata if m["key"] and m["value"]}}
+            metadata_details = {m["key"]: m["value"] for m in metadata if m.get("key") and m.get("value")}
 
-            # Collect all file paths for the SimpleDirectoryReader
-            files = [
-                os.path.join(root, name)
-                for root, _, filenames in os.walk(temp_folder)
-                for name in filenames
-            ]
+            def metadata_builder(relative_path):
+                return {"uploaded_path": relative_path, **metadata_details}
 
-            # Use SimpleDirectoryReader to read the saved files
-            documents = SimpleDirectoryReader(input_files=files, file_metadata=meta, recursive=True).load_data()
+            # Use Docling to read everything that was just saved.
+            documents = load_with_docling(temp_folder, metadata_builder=metadata_builder)
+            print(f"Docling ingestion created {len(documents)} documents from {len(files)} files")
 
             if not documents:
-                return jsonify({"error": "No valid documents found"}), 400
+                return jsonify({
+                    "error": "No valid documents found",
+                    "files_received": len(files),
+                    "tip": "Перевірте логи бекенда: там видно які файли Docling не зміг прочитати"
+                }), 400
 
             # Update the vector index with the new documents
             global vector_index
@@ -548,7 +579,7 @@ def select_model():
         if new_model == current_model:
             return jsonify({"message": "Model already selected"})
         current_model = new_model
-        llm = Ollama(model=new_model, request_timeout=120.0, base_url="http://localhost:11434")
+        llm = Ollama(model=new_model, request_timeout=120.0, base_url=DEFAULT_OLLAMA_URL)
         Settings.llm = llm
         chat_engine = vector_index.as_chat_engine(chat_mode=settings["chat_mode"], llm=llm,
             context_prompt=(
@@ -559,7 +590,7 @@ def select_model():
         if new_model == current_embed_model:
             return jsonify({"message": "Model already selected"})
         current_embed_model = new_model
-        embed_model = OllamaEmbedding(model_name=new_model, base_url="http://localhost:11434")
+        embed_model = OllamaEmbedding(model_name=new_model, base_url=DEFAULT_OLLAMA_URL)
         Settings.embed_model = embed_model
     
     with open('models.json', 'w') as f:
@@ -590,8 +621,8 @@ def delete_model():
     try:
         if type == 'llm':
             if model == current_model:
-                current_model = "mistral:instruct"
-                llm = Ollama(model=current_model, request_timeout=120.0, base_url="http://localhost:11434", temperature=settings["temperature"], context_window=settings["context_window"])
+                current_model = DEFAULT_OLLAMA_MODEL
+                llm = Ollama(model=current_model, request_timeout=120.0, base_url=DEFAULT_OLLAMA_URL, temperature=settings["temperature"], context_window=settings["context_window"])
                 Settings.llm = llm
                 chat_engine = vector_index.as_chat_engine(chat_mode=settings["chat_mode"], llm=llm,
                     context_prompt=(
@@ -602,7 +633,7 @@ def delete_model():
         else:
             if model == current_embed_model:
                 current_embed_model = "mxbai-embed-large:latest"
-                embed_model = OllamaEmbedding(model_name=current_embed_model, base_url="http://localhost:11434")
+                embed_model = OllamaEmbedding(model_name=current_embed_model, base_url=DEFAULT_OLLAMA_URL)
                 Settings.embed_model = embed_model
             models["embed"] = [m for m in models["embed"] if m != model]
         ollama.delete(model)
@@ -713,7 +744,7 @@ def update_settings():
         with open('settings.json', 'w') as f:
             json.dump(settings, f)
 
-        llm = Ollama(model=current_model, request_timeout=120.0, base_url="http://localhost:11434", temperature=settings["temperature"], context_window=settings["context_window"])
+        llm = Ollama(model=current_model, request_timeout=120.0, base_url=DEFAULT_OLLAMA_URL, temperature=settings["temperature"], context_window=settings["context_window"])
         Settings.llm = llm
         Settings.chunk_size = settings["chunk_size"]
         Settings.chunk_overlap = settings["chunk_overlap"]
@@ -740,7 +771,7 @@ def index():
 def start_flask_app():
     # Uncomment the line under to use FlaskUI
     # ui.run()
-    app.run(port=8000, debug=False)
+    app.run(host="0.0.0.0", port=5000, debug=False)
 
 def cleanup():
     global ollama_process
@@ -749,8 +780,9 @@ def cleanup():
     if ollama_process:
         ollama_process.terminate()
     
-    # Stop Neo4j service (assuming this is required on all systems)
-    os.system("neo4j stop")
+    neo4j_cli = shutil.which("neo4j")
+    if neo4j_cli:
+        os.system("neo4j stop")
 
 if __name__ == '__main__':
     # Uncomment the line under to use FlaskUI
@@ -763,5 +795,8 @@ if __name__ == '__main__':
         
     finally:
         print("Cleaning up...")
-        ollama_process.terminate()
-        os.system("neo4j stop")
+        if ollama_process:
+            ollama_process.terminate()
+        neo4j_cli = shutil.which("neo4j")
+        if neo4j_cli:
+            os.system("neo4j stop")

@@ -9,7 +9,7 @@ function LeftPanel({ isSidebarCollapsed, setMessages }) {
 
   useEffect(() => {
     // Fetch session titles when the component mounts
-    fetch('http://127.0.0.1:5000/api/history')
+    fetch('http://127.0.0.1:5001/api/history')
       .then(response => response.json())
       .then(data => setSessionTitles(data))
       .catch(error => console.error('Error fetching session titles:', error));
@@ -27,7 +27,7 @@ function LeftPanel({ isSidebarCollapsed, setMessages }) {
     const storedSession = sessionStorage.getItem('selectedSession');
     if (storedSession) {
       setSelectedSession(storedSession);
-      fetch('http://127.0.0.1:5000/api/choose_chat_history', {
+      fetch('http://127.0.0.1:5001/api/choose_chat_history', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
@@ -56,7 +56,7 @@ function LeftPanel({ isSidebarCollapsed, setMessages }) {
   }, []);
 
   const handleSessionSelect = (filename) => {
-    fetch('http://127.0.0.1:5000/api/choose_chat_history', {
+    fetch('http://127.0.0.1:5001/api/choose_chat_history', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json'
@@ -124,10 +124,10 @@ function LeftPanel({ isSidebarCollapsed, setMessages }) {
               setMessages([]);
               setSelectedSession('');
               sessionStorage.removeItem('selectedSession');
-              fetch('http://localhost:5000/api/new_chat')
+              fetch('http://localhost:5001/api/new_chat')
                 .then(response => { console.log('New chat started:', response); })
 
-              fetch('http://127.0.0.1:5000/api/history')
+              fetch('http://127.0.0.1:5001/api/history')
                 .then(response => response.json())
                 .then(data => setSessionTitles(data))
                 .catch(error => console.error('Error fetching session titles:', error));

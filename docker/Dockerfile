@@ -1,23 +1,37 @@
-# Use an official Python runtime as a parent image
+# UI build stage
+FROM node:20-bullseye AS ui-builder
+WORKDIR /ui
+COPY ui/package*.json ./
+RUN npm install
+COPY ui/ .
+RUN npm run build
+
+# Backend runtime stage
 FROM python:3.11-slim
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    gcc \
     build-essential \
+    gcc \
+    poppler-utils \
+    tesseract-ocr \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender1 \
+    libgl1 \
+    libmagic1 \
+    ghostscript \
+    antiword \
     && rm -rf /var/lib/apt/lists/*
 
-# Set the working directory in the container
 WORKDIR /app
 
-# Copy the current directory contents into the container at /app
-COPY . /app
+COPY app/requirements.txt /tmp/requirements.txt
+RUN pip install --no-cache-dir -r /tmp/requirements.txt
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+COPY app/ /app/
+COPY --from=ui-builder /ui/build /app/web/build
 
-# Expose port 5000 (if your application uses it)
 EXPOSE 5000
 
-# Command to run your application
 CMD ["python", "main.py"]
-
